@@ -177,6 +177,50 @@ def test_call_ai_retries_without_temperature_when_gateway_rejects_it():
     assert "temperature" not in request_history[1]
 
 
+def test_call_ai_drops_images_and_retries_on_422():
+    client = AIClient.__new__(AIClient)
+    client.settings = SimpleNamespace(
+        model_name="fake-model",
+        enable_response_format=False,
+        enable_thinking=False,
+    )
+    request_history = []
+
+    async def fake_create(**kwargs):
+        request_history.append(kwargs)
+        if len(request_history) == 1:
+            raise Exception(
+                "Error code: 422 - {'error': {'message': 'Upstream error: 422', "
+                "'type': 'upstream_error'}}"
+            )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok":true}'))]
+        )
+
+    client.client = _build_fake_client(fake_create)
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/jpeg;base64,ZmFrZQ=="},
+                },
+                {"type": "text", "text": "分析这张图"},
+            ],
+        }
+    ]
+
+    response = asyncio.run(client._call_ai(messages))
+
+    assert response == '{"ok":true}'
+    first_types = [part["type"] for part in request_history[0]["messages"][0]["content"]]
+    assert "image_url" in first_types
+    second_types = [part["type"] for part in request_history[1]["messages"][0]["content"]]
+    assert "image_url" not in second_types
+
+
 def test_call_ai_retries_when_response_content_is_empty():
     client = AIClient.__new__(AIClient)
     client.settings = SimpleNamespace(

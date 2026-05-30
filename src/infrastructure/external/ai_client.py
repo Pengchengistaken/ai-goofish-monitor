@@ -25,7 +25,9 @@ from src.services.ai_request_compat import (
     is_json_output_unsupported_error,
     is_responses_api_unsupported_error,
     is_temperature_unsupported_error,
+    is_unprocessable_content_error,
     remove_temperature_param,
+    strip_images_from_messages,
 )
 from src.services.ai_response_parser import (
     EmptyAIResponseError,
@@ -64,6 +66,18 @@ def _sanitize_no_proxy_env() -> None:
             cleaned.append(part)
         if changed:
             os.environ[key] = ",".join(cleaned)
+
+
+def _messages_have_images(messages: List[Dict]) -> bool:
+    """判断消息列表中是否包含图片片段。"""
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in ("image_url", "input_image"):
+                return True
+    return False
 
 
 class AIClient:
@@ -195,12 +209,18 @@ class AIClient:
         )
         use_temperature = True
         max_attempts = 4
+        has_images = _messages_have_images(messages)
+        drop_images = False
 
         for attempt in range(max_attempts):
+            # 上游返回 422 时降级为纯文本重试（去掉图片）。
+            active_messages = (
+                strip_images_from_messages(messages) if drop_images else messages
+            )
             request_params = build_ai_request_params(
                 api_mode,
                 model=self.settings.model_name,
-                messages=messages,
+                messages=active_messages,
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
                 enable_json_output=use_response_format,
@@ -249,6 +269,14 @@ class AIClient:
                     use_temperature = False
                     changed = True
                     print("当前模型不支持 temperature 参数，正在自动重试并移除该参数")
+                if (
+                    has_images
+                    and not drop_images
+                    and is_unprocessable_content_error(exc)
+                ):
+                    drop_images = True
+                    changed = True
+                    print("上游返回 422，疑似图片导致请求无法处理，正在自动改为纯文本（去图）重试")
                 if changed and attempt < max_attempts - 1:
                     continue
                 raise

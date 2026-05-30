@@ -213,6 +213,57 @@ def test_get_ai_analysis_retries_without_temperature_when_gateway_rejects_it(
     assert "temperature" not in request_history[1]
 
 
+def test_get_ai_analysis_drops_images_and_retries_on_422(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    request_history = []
+
+    async def fake_create(**kwargs):
+        request_history.append(kwargs)
+        if len(request_history) == 1:
+            raise Exception(
+                "Error code: 422 - {'error': {'message': 'Upstream error: 422', "
+                "'type': 'upstream_error'}}"
+            )
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=(
+                            '{"prompt_version":"v1","is_recommended":true,'
+                            '"reason":"ok","risk_tags":[],"criteria_analysis":{"seller_type":"个人"}}'
+                        )
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setattr(ai_handler, "client", _build_fake_client(fake_create))
+    monkeypatch.setattr(ai_handler, "MODEL_NAME", "fake-model")
+    monkeypatch.setattr(ai_handler, "ENABLE_RESPONSE_FORMAT", True)
+    monkeypatch.setattr(app_config, "ENABLE_RESPONSE_FORMAT", True)
+    monkeypatch.setattr(
+        ai_handler, "encode_image_to_base64", lambda _path: "ZmFrZQ=="
+    )
+
+    result = asyncio.run(
+        ai_handler.get_ai_analysis(
+            {"商品信息": {"商品ID": "8", "商品标题": "测试商品8"}},
+            image_paths=["/fake/a.jpg"],
+            prompt_text="请输出 JSON",
+        )
+    )
+
+    assert result["reason"] == "ok"
+    first_types = [
+        part["type"] for part in request_history[0]["messages"][0]["content"]
+    ]
+    assert "image_url" in first_types
+    second_types = [
+        part["type"] for part in request_history[1]["messages"][0]["content"]
+    ]
+    assert "image_url" not in second_types
+
+
 def test_get_ai_analysis_uses_first_json_object_when_model_returns_multiple_objects(
     monkeypatch, tmp_path
 ):

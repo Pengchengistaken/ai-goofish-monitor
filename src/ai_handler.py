@@ -44,7 +44,9 @@ from src.services.ai_request_compat import (
     is_json_output_unsupported_error,
     is_responses_api_unsupported_error,
     is_temperature_unsupported_error,
+    is_unprocessable_content_error,
     remove_temperature_param,
+    strip_images_from_messages,
 )
 from src.services.notification_service import build_notification_service
 from src.utils import convert_goofish_link, retry_on_failure
@@ -373,6 +375,8 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
     api_mode = CHAT_COMPLETIONS_API_MODE
     use_response_format = ENABLE_RESPONSE_FORMAT
     use_temperature = True
+    has_images = bool(image_data_urls)
+    drop_images = False
     for attempt in range(max_retries):
         try:
             # 根据重试次数调整参数
@@ -380,10 +384,15 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
 
             from src.config import get_ai_request_params
 
+            # 上游返回 422 时降级为纯文本重试（去掉图片）。
+            active_messages = (
+                strip_images_from_messages(messages) if drop_images else messages
+            )
+
             request_params = build_ai_request_params(
                 api_mode,
                 model=MODEL_NAME,
-                messages=messages,
+                messages=active_messages,
                 temperature=current_temperature,
                 max_output_tokens=4000,
                 enable_json_output=use_response_format,
@@ -465,6 +474,15 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
                 use_temperature = False
                 safe_print(
                     "   [AI分析] 当前模型不支持 temperature 参数，后续重试将自动禁用该参数。"
+                )
+            if (
+                has_images
+                and not drop_images
+                and is_unprocessable_content_error(e)
+            ):
+                drop_images = True
+                safe_print(
+                    "   [AI分析] 上游返回 422，疑似图片导致请求无法处理，后续重试将自动改为纯文本（去图）分析。"
                 )
             if AI_DEBUG_MODE:
                 safe_print(f"\n--- [AI DEBUG] 第{attempt + 1}次尝试 EXCEPTION ---")

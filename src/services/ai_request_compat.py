@@ -33,6 +33,12 @@ UNSUPPORTED_TEMPERATURE_MARKERS = (
     "temperature",
     "sampling temperature",
 )
+IMAGE_CONTENT_TYPES = ("image_url", INPUT_IMAGE_TYPE)
+UNPROCESSABLE_CONTENT_MARKERS = (
+    "error code: 422",
+    "upstream error: 422",
+    "upstream_error",
+)
 
 
 def build_responses_input(messages: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -174,6 +180,46 @@ def remove_temperature_param(request_params: Dict[str, Any]) -> Dict[str, Any]:
     next_params = dict(request_params)
     next_params.pop("temperature", None)
     return next_params
+
+
+def is_unprocessable_content_error(error: Exception) -> bool:
+    """识别上游模型/转发网关返回的 HTTP 422 内容无法处理错误。
+
+    典型场景是中转站把上游厂商的 422 包装成
+    ``{'error': {'message': 'Upstream error: 422', 'type': 'upstream_error'}}``。
+    这类错误重试相同请求无效，常见诱因是图片过大/过多或不被支持，
+    因此识别后可降级为去图重试。
+    """
+    if getattr(error, "status_code", None) == 422:
+        return True
+
+    message = str(error).lower()
+    return any(marker in message for marker in UNPROCESSABLE_CONTENT_MARKERS)
+
+
+def strip_images_from_messages(
+    messages: Iterable[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """返回移除了图片片段的消息副本，用于纯文本降级重试。
+
+    仅处理 Chat Completions 风格的 ``content`` 列表；字符串内容原样保留。
+    不修改传入的原始消息。
+    """
+    stripped: List[Dict[str, Any]] = []
+    for message in messages:
+        next_message = dict(message)
+        content = next_message.get("content")
+        if isinstance(content, list):
+            next_message["content"] = [
+                copy.deepcopy(part)
+                for part in content
+                if not (
+                    isinstance(part, dict)
+                    and part.get("type") in IMAGE_CONTENT_TYPES
+                )
+            ]
+        stripped.append(next_message)
+    return stripped
 
 
 def _is_api_unsupported_error(

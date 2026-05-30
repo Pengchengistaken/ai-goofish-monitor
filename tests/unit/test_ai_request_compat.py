@@ -5,7 +5,9 @@ from src.services.ai_request_compat import (
     is_json_output_unsupported_error,
     is_responses_api_unsupported_error,
     is_temperature_unsupported_error,
+    is_unprocessable_content_error,
     remove_temperature_param,
+    strip_images_from_messages,
 )
 
 
@@ -106,3 +108,63 @@ def test_json_output_error_not_triggered_by_unrelated_400():
 def test_json_output_error_not_triggered_without_body():
     err = Exception("some random 400 error")
     assert is_json_output_unsupported_error(err) is False
+
+
+# -- is_unprocessable_content_error tests --
+
+
+def test_unprocessable_content_error_detected_via_status_code():
+    class _Err(Exception):
+        status_code = 422
+
+        def __str__(self):
+            return "Error code: 422 - upstream rejected"
+
+    assert is_unprocessable_content_error(_Err()) is True
+
+
+def test_unprocessable_content_error_detected_via_upstream_message():
+    err = Exception(
+        "Error code: 422 - {'error': {'message': 'Upstream error: 422', "
+        "'type': 'upstream_error'}}"
+    )
+    assert is_unprocessable_content_error(err) is True
+
+
+def test_unprocessable_content_error_not_triggered_by_other_status():
+    err = Exception("Error code: 400 - bad request")
+    assert is_unprocessable_content_error(err) is False
+
+
+# -- strip_images_from_messages tests --
+
+
+def test_strip_images_from_messages_drops_image_parts_keeps_text():
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "请分析"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/jpeg;base64,AAAA"},
+                },
+            ],
+        }
+    ]
+
+    stripped = strip_images_from_messages(messages)
+
+    content = stripped[0]["content"]
+    assert all(part.get("type") != "image_url" for part in content)
+    assert any(part.get("type") == "text" for part in content)
+    # 原始消息不应被修改
+    assert len(messages[0]["content"]) == 2
+
+
+def test_strip_images_from_messages_leaves_string_content_untouched():
+    messages = [{"role": "user", "content": "纯文本"}]
+
+    stripped = strip_images_from_messages(messages)
+
+    assert stripped[0]["content"] == "纯文本"
