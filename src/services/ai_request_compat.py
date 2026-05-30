@@ -111,7 +111,8 @@ def build_ai_request_params(
     enable_json_output: bool = False,
 ) -> Dict[str, Any]:
     """根据 API 模式构建请求参数。"""
-    request_params = {"model": model}
+    # 显式声明非流式，避免部分转发网关在缺省 stream 字段时默认返回 SSE 流。
+    request_params = {"model": model, "stream": False}
     if api_mode == RESPONSES_API_MODE:
         request_params["input"] = build_responses_input(messages)
         if max_output_tokens is not None:

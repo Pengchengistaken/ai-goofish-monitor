@@ -16,10 +16,10 @@ def extract_ai_response_content(response: Any) -> str:
 
     if isinstance(response, (bytes, bytearray)):
         text = response.decode("utf-8", errors="replace")
-        return _normalize_text_content(text)
+        return _normalize_text_content(_maybe_reassemble_sse_stream(text))
 
     if isinstance(response, str):
-        return _normalize_text_content(response)
+        return _normalize_text_content(_maybe_reassemble_sse_stream(response))
 
     output_text = getattr(response, "output_text", None)
     if isinstance(output_text, str):
@@ -77,6 +77,46 @@ def _coerce_content_parts(content: Any) -> str:
         if isinstance(text, str):
             parts.append(text)
     return "".join(parts)
+
+
+def _maybe_reassemble_sse_stream(text: str) -> str:
+    """将 SSE 流式响应文本重组为完整内容。
+
+    部分 OpenAI 兼容转发网关即使在非流式请求下也会返回
+    ``text/event-stream``（一连串 ``data: {...}`` 行）。OpenAI SDK 在
+    content-type 非 JSON 时会原样透传响应体文本，导致原始流被当成内容。
+    此函数识别这种情况并拼接各 ``delta`` 片段；若不是 SSE 流则原样返回。
+    """
+    stripped = text.lstrip()
+    if not stripped.startswith("data:"):
+        return text
+
+    parts: list[str] = []
+    found_data_line = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        found_data_line = True
+        payload = line[len("data:"):].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(payload)
+        except json.JSONDecodeError:
+            # 不是合法的 SSE JSON 块，无法重组，回退为原始文本。
+            return text
+        choices = chunk.get("choices") if isinstance(chunk, dict) else None
+        if not choices:
+            continue
+        delta = choices[0].get("delta") or {}
+        piece = delta.get("content") or delta.get("reasoning_content")
+        if isinstance(piece, str):
+            parts.append(piece)
+
+    if found_data_line and parts:
+        return "".join(parts)
+    return text
 
 
 def _normalize_text_content(content: str) -> str:

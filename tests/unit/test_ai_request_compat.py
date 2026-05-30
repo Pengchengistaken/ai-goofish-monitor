@@ -1,9 +1,33 @@
 from src.services.ai_request_compat import (
+    CHAT_COMPLETIONS_API_MODE,
+    RESPONSES_API_MODE,
+    build_ai_request_params,
     is_json_output_unsupported_error,
     is_responses_api_unsupported_error,
     is_temperature_unsupported_error,
     remove_temperature_param,
 )
+
+
+def test_chat_completions_params_explicitly_disable_streaming():
+    """非流式请求应显式带 stream=False，避免转发网关默认返回 SSE 流。"""
+    params = build_ai_request_params(
+        CHAT_COMPLETIONS_API_MODE,
+        model="x",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+
+    assert params["stream"] is False
+
+
+def test_responses_params_explicitly_disable_streaming():
+    params = build_ai_request_params(
+        RESPONSES_API_MODE,
+        model="x",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+
+    assert params["stream"] is False
 
 
 def test_is_temperature_unsupported_error_detects_unsupported_message():
